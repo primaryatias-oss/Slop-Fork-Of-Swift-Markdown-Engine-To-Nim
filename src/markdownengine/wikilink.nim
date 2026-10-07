@@ -272,6 +272,14 @@ proc updatedStorageState*(display: Utf16Text, editedRange: Range,
   ## rebuild.
   let delta = changeInLength
 
+  # `changeInLength` comes from the caller, and a caller with no trustworthy
+  # delta passes a sentinel. Bound it before any arithmetic: the guard below
+  # would reject it on its merits, but `editedRange.length - delta` overflows
+  # first and takes the process with it.
+  let bound = display.len + previousStorage.len + 4096
+  if delta < -bound or delta > bound:
+    return ("", initTable[RangeKey, LinkMetadata](), false)
+
   # Only contiguous, small, well-formed edits take the fast path.
   if editedRange.location == NotFound or editedRange.length < 0 or
      editedRange.length > 4096 or maxRange(editedRange) > display.len or

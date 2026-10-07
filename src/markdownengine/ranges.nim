@@ -96,9 +96,13 @@ func normalizeScopes*(ranges: seq[Range], documentLength: int): seq[Range] =
   var kept: seq[Range] = @[]
   for r in ranges:
     if r.location == NotFound or r.location < 0 or r.length <= 0: continue
-    let endOffset = r.location + r.length
-    if endOffset < r.location: continue            # overflow
-    if endOffset > documentLength: continue
+    if r.location > documentLength: continue
+    # Subtraction rather than `location + length > documentLength`: callers
+    # hand this untrusted geometry (a stale selection, a range carried across
+    # a shrinking edit), and the sum of two plausible-looking Ints overflows
+    # before any comparison can reject it. Both operands here are already
+    # known non-negative and bounded by `documentLength`.
+    if r.length > documentLength - r.location: continue
     kept.add r
   let sorted = sortRanges(kept)
   result = @[]

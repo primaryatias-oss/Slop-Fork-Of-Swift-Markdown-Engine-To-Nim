@@ -202,8 +202,13 @@ func isAlphanumericUnit*(c: uint16): bool =
 # ---------------------------------------------------------------------------
 
 func lineRange*(t: Utf16Text, r: Range): Range =
-  ## `NSString.lineRange(for:)`: expands to whole lines, trailing terminator
-  ## INCLUDED. A zero-length range at a line start stays on that line.
+  ## `NSString.lineRange(for:)`: the minimal range of complete lines containing
+  ## `r`, trailing terminator INCLUDED.
+  ##
+  ## The boundary rule matters: a range that already ENDS at a line boundary
+  ## does not pull in the next line. Getting that wrong made a heading's
+  ## paragraph style spill onto the blank line after it, because the styler
+  ## hands this the heading's block range — which ends just past its newline.
   let len = t.units.len
   if len == 0: return Range(location: 0, length: 0)
   var start = max(0, min(r.location, len))
@@ -212,14 +217,12 @@ func lineRange*(t: Utf16Text, r: Range): Range =
   # Walk back to just after the previous terminator.
   while start > 0 and not isLineTerminator(t.units[start - 1]):
     dec start
-  # A caret sitting right after a CRLF pair must not split the pair.
-  if start > 0 and t.units[start - 1] == chLF and start >= 2 and
-     t.units[start - 2] == chCR and start == stop and r.length == 0:
-    discard
 
-  # Walk forward past the terminator that ends this line.
-  if stop == start and r.length == 0:
-    stop = start
+  # Already at a boundary: the range ends exactly where the next line begins.
+  if stop > start and stop > 0 and isLineTerminator(t.units[stop - 1]):
+    return Range(location: start, length: stop - start)
+
+  # Otherwise walk forward past the terminator that ends this line.
   while stop < len and not isLineTerminator(t.units[stop]):
     inc stop
   if stop < len:
@@ -230,13 +233,16 @@ func lineRange*(t: Utf16Text, r: Range): Range =
   Range(location: start, length: stop - start)
 
 func paragraphRange*(t: Utf16Text, r: Range): Range =
-  ## `NSString.paragraphRange(for:)` — same walk, paragraph terminators only.
+  ## `NSString.paragraphRange(for:)` — same walk and the same boundary rule,
+  ## over paragraph terminators only.
   let len = t.units.len
   if len == 0: return Range(location: 0, length: 0)
   var start = max(0, min(r.location, len))
   var stop = max(start, min(maxRange(r), len))
   while start > 0 and not isParagraphTerminator(t.units[start - 1]):
     dec start
+  if stop > start and stop > 0 and isParagraphTerminator(t.units[stop - 1]):
+    return Range(location: start, length: stop - start)
   while stop < len and not isParagraphTerminator(t.units[stop]):
     inc stop
   if stop < len:

@@ -153,6 +153,31 @@ func av*(v: Range): AttrValue {.inline.} = AttrValue(kind: avRange, rangeVal: v)
 func av*(v: ImageHandle): AttrValue {.inline.} = AttrValue(kind: avImage, imageVal: v)
 func av*(v: UnderlineStyle): AttrValue {.inline.} = AttrValue(kind: avUnderline, underlineVal: v)
 
+func `==`*(a, b: ParagraphStyle): bool =
+  ## Structural, not reference, equality.
+  ##
+  ## `ParagraphStyle` is a `ref` only because the Swift mutates one and hands
+  ## it round; the doc comment above calls instances immutable once attached.
+  ## Two styles with the same fields therefore ARE the same style, and the
+  ## default reference `==` would say otherwise — which matters wherever runs
+  ## are compared to decide whether they can be merged (the run compressor in
+  ## the text storage, the layout's run splitter), and wherever a scoped
+  ## restyle is checked against a full one. Each pass builds its own instance,
+  ## so reference equality would answer `false` for every such pair.
+  if a.isNil or b.isNil: return a.isNil and b.isNil
+  a.minimumLineHeight == b.minimumLineHeight and
+    a.maximumLineHeight == b.maximumLineHeight and
+    a.lineSpacing == b.lineSpacing and
+    a.paragraphSpacing == b.paragraphSpacing and
+    a.paragraphSpacingBefore == b.paragraphSpacingBefore and
+    a.firstLineHeadIndent == b.firstLineHeadIndent and
+    a.headIndent == b.headIndent and
+    a.tailIndent == b.tailIndent and
+    a.lineBreakMode == b.lineBreakMode and
+    a.alignment == b.alignment and
+    a.tabStops == b.tabStops and
+    a.defaultTabInterval == b.defaultTabInterval
+
 func `==`*(a, b: AttrValue): bool =
   if a.kind != b.kind: return false
   case a.kind

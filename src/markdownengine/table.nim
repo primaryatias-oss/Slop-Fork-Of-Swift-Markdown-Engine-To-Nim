@@ -11,13 +11,17 @@
 ## instead of a bitmap.
 
 import std/strutils
-import ./utf16text
+import ./utf16text, ./block_parser
 
 type
   TableAlignment* = enum
-    taLeft
-    taCenter
-    taRight
+    ## A GFM column alignment. The `tca` prefix keeps these distinct from
+    ## `TextAlignment`'s `ta…` members: both enums are exported from the same
+    ## umbrella module, and in Nim two enums sharing a member name make every
+    ## unqualified use of it ambiguous for consumers.
+    tcaLeft
+    tcaCenter
+    tcaRight
 
   ParsedTable* = object
     header*: seq[string]
@@ -61,15 +65,22 @@ func parseTableAlignments*(line: string): seq[TableAlignment] =
     let trimmed = trimWhitespace(cell)
     let leading = trimmed.startsWith(":")
     let trailing = trimmed.endsWith(":")
-    if leading and trailing: result.add taCenter
-    elif trailing: result.add taRight
-    else: result.add taLeft
+    if leading and trailing: result.add tcaCenter
+    elif trailing: result.add tcaRight
+    else: result.add tcaLeft
 
 func parseTableSource*(source: string): (ParsedTable, bool) =
   var lines: seq[string] = @[]
   for raw in source.splitLines():
     if trimWhitespace(raw).len > 0: lines.add raw
   if lines.len < 2: return (ParsedTable(), false)
+
+  # The second line must really be a separator. In the editor this function
+  # only ever sees a range the block parser already classified as a table, so
+  # the guard is for every other caller — a paste handler, an export, a test —
+  # which would otherwise get a two-column "table" out of `| a | b |` over
+  # `| 1 | 2 |`, with the data row silently read as the alignment spec.
+  if not isTableSeparator(lines[1]): return (ParsedTable(), false)
 
   let header = parseTableRow(lines[0])
   let alignments = parseTableAlignments(lines[1])
@@ -87,7 +98,7 @@ func parseTableSource*(source: string): (ParsedTable, bool) =
     if xs.len == count: return xs
     if xs.len > count: return xs[0 ..< count]
     result = xs
-    for _ in xs.len ..< count: result.add taLeft
+    for _ in xs.len ..< count: result.add tcaLeft
 
   var rows: seq[seq[string]] = @[]
   for i in 2 ..< lines.len:

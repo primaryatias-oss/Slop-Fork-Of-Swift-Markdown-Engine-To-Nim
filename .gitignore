@@ -1,7 +1,10 @@
 # Nim build output
 nimcache/
 /mdedit
-/tests/test_all
+# Every test module compiles to a binary beside its source; `test_all` links
+# them all into one, which is what `nimble test` runs.
+/tests/test_*
+!/tests/test_*.nim
 /tests/*.out
 *.o
 

@@ -1,310 +1,219 @@
-<p align="center">                                                                                               
-<img width="128" alt="SwiftMarkdownEngine logo" src="media/logo.png" />
-</p>
-
-<h1 align="center">SwiftMarkdownEngine</h1>  
+<h1 align="center">MarkdownEngine — Nim / SDL3</h1>
 
 <p align="center">
-  <a href="https://swift.org"><img src="https://img.shields.io/badge/Swift-5.9+-F05138?logo=swift&logoColor=white" alt="Swift 5.9+" /></a>
-  <a href="https://developer.apple.com/macos/"><img src="https://img.shields.io/badge/Platforms-macOS%2014+-lightgrey" alt="Platforms macOS 14+" /></a>
+  <a href="https://nim-lang.org"><img src="https://img.shields.io/badge/Nim-2.2+-FFE953?logo=nim&logoColor=black" alt="Nim 2.2+" /></a>
+  <img src="https://img.shields.io/badge/Platform-Linux-lightgrey" alt="Platform Linux" />
+  <a href="https://libsdl.org"><img src="https://img.shields.io/badge/SDL-3-informational" alt="SDL3" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-yellow.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://github.com/nodes-app/swift-markdown-engine/actions/workflows/ci.yml"><img src="https://github.com/nodes-app/swift-markdown-engine/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
+<p align="center">
+  <img width="100%" alt="The editor, light appearance" src="media-nim/editor-light.png" />
+</p>
 
+A live-styling Markdown editor, ported to **Nim** from
+[`nodes-app/swift-markdown-engine`](https://github.com/nodes-app/swift-markdown-engine)
+and drawn with **SDL3**. Linux only.
 
-<video src="https://github.com/user-attachments/assets/b61ed622-0e9a-4e91-9de5-9cd6c53752e5"
-       autoplay loop muted playsinline
-       width="100%">
-</video>
+It is the same engine: the same two-phase parser, the same compose-on-descent
+styler, the same extension and directive seams, the same UTF-16 range
+currency. What changed is everything AppKit used to supply — font
+rasterisation, text layout, hit testing, the scroll view, the undo manager,
+the pasteboard — which is written here instead, against the Nim standard
+library and the SDL3 bindings and nothing else.
 
-
-A native AppKit Markdown editor for macOS, built on TextKit 2 and bridged to SwiftUI. It is the editor inside **[Nodes](https://apps.apple.com/app/apple-store/id6745401961?pt=127809373&ct=github&mt=8)**, a macOS notes app. Live styling, wiki-link support, fenced code blocks with syntax highlighting, LaTeX rendering, embedded images, and GitHub-style task
-checkboxes.
-
-## Features
-
-- **Live Markdown styling** — bold, italic, headings, lists, blockquotes, GFM tables, code, links, task checkboxes, horizontal rules
-- **Wiki-style linking** with two-form storage / display roundtripping
-  (`[[Name|<id>]]` ↔ `[[Name]]`)
-- **Image embeds** — both `![[Name]]` (Obsidian-style, embedder supplies the                           
-  bytes) and standard Markdown `![alt](url)`
-- **LaTeX** — both block (`$$ … $$`) and inline (`$…$`), embedder supplies
-  the renderer
-- **Code blocks** with embedder-supplied syntax highlighting and overlayable
-  copy buttons
-- **Reading column** — opt-in fixed-width centered column, wide tables
-  break out to the full window width (`readingWidth`)
-- **Scroll-away header** — host your own SwiftUI view above the document;
-  it scrolls with the content and collapses to a pinned top row
-- **TextKit 2** layout for accurate, modern text rendering
-- **Writing Tools** integration on macOS 15.1+
-- **Comfortable bottom overscroll** so the caret never pins to the viewport
-  edge while typing
-- **Drag-select autoscroll boost** for long documents
-- **Spelling & grammar** with code/LaTeX/wiki-link suppression
-- **Extensions** — opt-in constructs defined by a *delimiter pair* (`==highlight==`, `~~strikethrough~~`, …); add your own via [`MarkdownExtension`](#extensions)
-- **Directives** — opt-in constructs defined by a *name and typed arguments*, for what a delimiter pair can't express (`@font(size: 18){text}`); add your own via [`MarkdownDirective`](#directives)
-
-## Installation
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/nodes-app/swift-markdown-engine", from: "0.1.0")
-],
-targets: [
-    .target(
-        name: "YourApp",
-        dependencies: [
-            .product(name: "MarkdownEngine", package: "swift-markdown-engine"),
-        ]
-    )
-]
+```bash
+nim c -r -d:release src/mdedit.nim          # build and run the editor
+nim c -r --hints:off tests/test_all.nim     # 451 tests, 94 suites
 ```
 
-Or in Xcode: **File → Add Package Dependencies…** and paste the repo URL.
+## What "no other library" bought and cost
 
-The package ships three library products — add only what you need:
+The only dependency is [nim-lang/sdl3](https://github.com/nim-lang/sdl3),
+vendored in [`vendor/sdl3.nim`](vendor/sdl3.nim) (MIT) so a checkout builds
+with no package fetch. SDL3 gives a window, a GPU-backed renderer, filled
+rectangles, textures, and events. It gives no text.
 
-| Product | Use when |
-|---|---|
-| `MarkdownEngine` | You want the editor only. Zero external dependencies. |
-| `MarkdownEngineCodeBlocks` | You want the full visual code-block experience — background fill, monospace font, and syntax highlighting — without writing your own bridge. Pulls in [HighlighterSwift](https://github.com/smittytone/HighlighterSwift) transitively. See [Customization → Code Blocks](#code-blocks). |
-| `MarkdownEngineLatex` | You want LaTeX formula rendering without writing your own bridge. Pulls in [SwiftMath](https://github.com/mgriebling/SwiftMath) transitively. See [Customization → LaTeX Rendering](#latex-rendering). |
+Everything between "here is a `seq[uint16]` of markdown" and "here are pixels"
+had to be written:
 
-## Quick Start
-
-```swift
-import SwiftUI
-import MarkdownEngine
-
-struct EditorScreen: View {
-    @State private var text: String = "# Hello, *world*"
-
-    var body: some View {
-        NativeTextViewWrapper(text: $text)
-    }
-}
-```
-
-That's it. See [Customization](#customization) below for syntax
-highlighting, themes, wiki-link state, and more.
-
-> **Displaying multiple editors?** Pass a stable, unique
-> `documentId: "your-doc-id"` so undo history and pending replacements
-> stay scoped to each editor instance.
-
-## Customization
-
-### Service Protocols
-
-The engine talks to your app through four service protocols, each with
-a no-op default so you only implement what you actually need:
-
-| Protocol | What you supply | Ready-made bridge / suggested library |
+| AppKit supplied | This port has | Where |
 |---|---|---|
-| `WikiLinkResolver` | Resolve a `[[Name]]` to a stable opaque id | (your data model) |
-| `EmbeddedImageProvider` | Look up an `NSImage` for `![[Name]]` | (your asset store) |
-| `SyntaxHighlighter` | Highlight code blocks for a given language | **`HighlighterSwiftBridge`** ([recommended](#code-blocks)) — built on [HighlighterSwift](https://github.com/smittytone/HighlighterSwift) |
-| `LatexRenderer` | Render a LaTeX string to an `NSImage` | **`SwiftMathBridge`** ([recommended](#latex-rendering)) — built on [SwiftMath](https://github.com/mgriebling/SwiftMath) |
+| CoreText rasterisation | A TrueType parser and scanline rasteriser: sfnt tables, simple and composite glyphs, quadratic flattening, analytic signed-area antialiasing, synthetic bold and oblique | [`src/mdui/truetype.nim`](src/mdui/truetype.nim) |
+| `NSFont` / font matching | Family groups resolved against the installed fonts, with a fallback cascade per code point | [`src/mdui/fontmanager.nim`](src/mdui/fontmanager.nim) |
+| TextKit 2 layout | Paragraph-based line breaking, caret geometry, hit testing, selection rectangles, vertical motion with a sticky x | [`src/mdui/layout.nim`](src/mdui/layout.nim) |
+| `NSTextStorage` | A run-based attributed string with per-paragraph splicing | [`src/mdui/textstorage.nim`](src/mdui/textstorage.nim) |
+| `NSRegularExpression`, `NSDataDetector` | Hand-written scanners, one per pattern the Swift used | throughout the engine |
+| `NSAttributedString.Key: Any` | A closed `AttrKey` enum and an `AttrValue` variant | [`src/markdownengine/attributes.nim`](src/markdownengine/attributes.nim) |
+| `NSColor` dynamic colors | A `Color` carrying both appearances, resolved at draw time | [`src/markdownengine/color.nim`](src/markdownengine/color.nim) |
 
-Implement what you need and pass it through `MarkdownEditorServices`:
+The consequences are worth stating plainly, because they are what a reader
+will hit first:
 
-```swift
-struct MyResolver: WikiLinkResolver {
-    func resolve(displayName: String, range: NSRange) -> WikiLinkResolution? {
-        myIndex[displayName].map { WikiLinkResolution(id: $0, exists: true) }
-    }
-}
+- **No image decoding.** The standard library has no PNG or JPEG decoder and
+  there is no `zlib` here, so `![alt](file)` and `![[embed]]` read BMP (through
+  SDL3's own loader) and PPM/PGM. Screenshots are *written* as PNG using
+  DEFLATE **stored** blocks — larger than a compressed file, read by every
+  decoder, and enough to make the headless smoke test look at real pixels.
+- **No SF Symbols.** A directive's `symbolPresentation` travels to the
+  renderer as a name, and the renderer draws a shape or a Unicode glyph for
+  the handful it knows. Unknown names leave the source visible rather than
+  collapsing it to a gap.
+- **No regex.** `std/re` and `std/nre` wrap PCRE, so every pattern the Swift
+  expressed as a regex is a scanner here — including the six incomplete-link
+  patterns, whose end-of-document `$` semantics are reproduced exactly.
+- **Only scalable TrueType.** The rasteriser reads `glyf` outlines. A CFF/OTF
+  face (Inter, for instance) is rejected at load and the next family in the
+  group is tried.
+- **No spell checker.** The `akSpellingState` attribute is still produced and
+  still suppressed over code, links and LaTeX, so the data is there for an
+  embedder that has one.
 
-configuration.services = MarkdownEditorServices(
-    wikiLinks: MyResolver()
-    // images, syntaxHighlighter, latex omitted → no-op defaults
-)
+## Requirements
+
+- **Nim 2.2** or later
+- **SDL3** installed as a shared library (`libSDL3.so`), loaded dynamically
+- At least one scalable TrueType family installed. DejaVu or Liberation
+  covers sans, serif and monospace; the font manager picks the first group
+  whose regular face loads.
+
+No Nim packages are required, so `nimble` is optional — every command below is
+plain `nim`.
+
+```bash
+# Debian / Ubuntu
+sudo apt install libsdl3-0 fonts-dejavu-core
 ```
 
-Each protocol and its no-op default are documented in DocC.
+## Running it
 
-### Code Blocks
-
-**Recommended path: depend on the `MarkdownEngineCodeBlocks` product
-and use the bundled `HighlighterSwiftBridge`.** Rolling your own
-`SyntaxHighlighter` has subtle footguns the bridge already handles —
-line-height metrics across light/dark themes, appearance-change
-observation, layout-pass timing, font name extraction from the theme,
-and CSS-theme-derived background colors. Use the bundle unless you
-specifically need a non-HighlighterSwift library.
-
-```swift
-import MarkdownEngineCodeBlocks
-
-var configuration = MarkdownEditorConfiguration.default
-configuration.services = MarkdownEditorServices(
-    syntaxHighlighter: HighlighterSwiftBridge()
-)
+```bash
+nim c -r -d:release src/mdedit.nim           # the editor, with a sample document
+nim c -r -d:release src/mdedit.nim notes.md  # …on a file
 ```
 
-The bridge auto-switches between `atom-one-light` and `atom-one-dark`
-with system appearance. Different theme names or a pinned single theme
-are configurable via init params — see DocC.
+The demo carries two sample documents (a tour and a kitchen sink), a toolbar
+wired to the formatting actions, a find bar, a context menu, a theme toggle,
+and a directive autocomplete picker. `--render-once` draws a single frame and
+prints a summary instead of opening a window, which is what the headless smoke
+test uses:
 
-Need a different highlighter library entirely? Implement
-`SyntaxHighlighter` yourself (see [Service Protocols](#service-protocols)
-above for the declaration) and reference the bundled bridge in
-`Sources/MarkdownEngineCodeBlocks/` as a working example.
-
-### LaTeX Rendering
-
-**Recommended path: depend on the `MarkdownEngineLatex` product and use
-the bundled `SwiftMathBridge`.** Hand-rolling a `LatexRenderer` has
-real footguns the bridge already handles — appearance-aware text color,
-zero-sized output guards (`lockFocus` crashes on 0×0 images),
-window-vs-NSApp appearance distinction, single-letter padding, and an
-internal cache keyed by (latex, font size, appearance, theme color).
-
-```swift
-import MarkdownEngineLatex
-
-var configuration = MarkdownEditorConfiguration.default
-configuration.services = MarkdownEditorServices(
-    latex: SwiftMathBridge()
-)
+```bash
+SDL_VIDEODRIVER=dummy ./mdedit --render-once
+# 1909 chars, 126 attribute runs, 53 lines, 1909 laid-out glyphs,
+# 28 tokens, 142 glyph uploads, content height 1415.8
 ```
 
-The bridge uses the Latin Modern math font and tints formulas with
-`MarkdownEditorTheme.latexLightModeText` / `latexDarkModeText`. Pass
-`singleLetterPaddingBottom:` to override the engine's matching default.
+<p align="center">
+  <img width="49%" alt="Dark appearance" src="media-nim/editor-dark.png" />
+  <img width="49%" alt="Kitchen sink" src="media-nim/kitchen-sink.png" />
+</p>
 
-### Theming
+## Using the engine
 
-Every color the editor puts on screen reads from `MarkdownEditorTheme`:
+The engine half (`src/markdownengine/`) has no UI dependency at all — it
+imports nothing outside `std/`. Give it text and a configuration, get back
+styled ranges:
 
-```swift
-var theme = MarkdownEditorTheme.default
-theme.bodyText = .labelColor
-theme.findMatchHighlight = NSColor(named: "MyAccent")!
+```nim
+import markdownengine
 
-var configuration = MarkdownEditorConfiguration.default
-configuration.theme = theme
+let text = initText("# Hello, *world*")
+var config = initConfiguration()
+
+for (range, attributes) in styleAttributes(text, config,
+                                           caretLocation = -1,
+                                           containerWidth = 600.0):
+  echo range, " ", attributes.len, " attributes"
 ```
 
-Defaults map to `NSColor` dynamic system colors, so light/dark mode
-keeps working without extra code.
+`styleAttributes` is the whole public surface for styling. It runs the parse
+(or reuses one you hand it), walks the AST, and returns overlapping
+`StyledRange`s in emission order — later ranges win per key, which is what
+`flattenedRuns` collapses when a caller wants one write per character.
 
-### Tuning
+### Measuring text
 
-`MarkdownEditorConfiguration` exposes every spacing / sizing / behavior
-knob the engine has, grouped by concern:
+The engine never measures text itself. It takes a `TextMetrics` — two procs,
+one for a font's metrics and one for a string's width — so the same styler
+runs under the real rasteriser and under a cheap approximation in tests:
 
-```swift
-var configuration = MarkdownEditorConfiguration.default
-configuration.codeBlock.fontSizeScale = 0.9
-configuration.headings.fontMultipliers = [2.4, 1.8, 1.4, 1.1, 0.9, 0.75]
-configuration.overscroll.percent = 0.4
-configuration.lists.helpersEnabled = false
-configuration.safeAreaInsets = SafeAreaInsets(top: 56)   // headroom under a translucent toolbar
+```nim
+let metrics = fonts.textMetrics()          # from mdui/fontmanager
+discard styleAttributes(text, config, tm = metrics, containerWidth = 600.0)
 ```
 
-### Wiki-Links & Replacement State
+`defaultTextMetrics` is the approximation, and it is what every engine-level
+test uses.
 
-Two optional bindings on `NativeTextViewWrapper` let you observe
-wiki-link state and push inline replacements programmatically. Pass
-only what you need — each is independent and defaults to a no-op:
+### Services
 
-```swift
-NativeTextViewWrapper(
-    text: $text,
-    isWikiLinkActive: $isWikiLinkActive,
-    pendingInlineReplacement: $pendingReplacement
-)
+Four seams, each with a no-op default, exactly as in the Swift:
+
+| Service | What you supply |
+|---|---|
+| `WikiLinkResolver` | Resolve `[[Name]]` to a stable opaque id |
+| `EmbeddedImageProvider` | An `ImageHandle` for `![[Name]]` |
+| `SyntaxHighlighter` | Coloured runs for a fenced block's language |
+| `LatexRenderer` | An `ImageHandle` for a formula |
+
+```nim
+config.services = initServices(wikiLinks = newWikiLinkResolver(
+  resolveProc = proc (displayName: string, r: Range): (WikiLinkResolution, bool) {.closure, gcsafe.} =
+    {.cast(gcsafe).}:                        # the closure reads your own index
+      if displayName in myIndex:
+        (WikiLinkResolution(id: myIndex[displayName], exists: true), true)
+      else:
+        (WikiLinkResolution(), false)))
 ```
 
-- `isWikiLinkActive` — the wrapper sets this to `true` while the caret
-  sits inside a `[[Name]]` link, so you can present a contextual UI.
-- `pendingInlineReplacement` — assign a non-nil value to push a
-  replacement (e.g. an autocomplete result); the engine consumes it
-  and clears the binding.
+A service returning nothing degrades visibly rather than silently: an
+unresolved wiki link renders disabled, a block with no highlighter renders as
+plain monospace, a formula with no renderer shows its source.
 
-### Height Behavior
+### Theming and tuning
 
-By default the editor scrolls internally. Set `heightBehavior` to
-`.fitsContent` to make it grow to fit its content and report that height to
-SwiftUI, so an enclosing `ScrollView` scrolls the page instead:
+Every colour the editor puts on screen comes from `MarkdownEditorTheme`, and
+every spacing and sizing knob from `MarkdownEditorConfiguration`:
 
-```swift
-ScrollView {
-    NativeTextViewWrapper(text: $text, configuration: .init(heightBehavior: .fitsContent))
-}
+```nim
+var config = initConfiguration()
+config.theme.bodyText = Color(light: rgba(0.1, 0.1, 0.1), dark: rgba(0.9, 0.9, 0.9))
+config.codeBlock.fontSizeScale = 0.9
+config.headings.fontMultipliers = @[2.4, 1.8, 1.4, 1.1, 0.9, 0.75]
+config.lists.helpersEnabled = false
 ```
 
-Composes with `readingWidth` and the scrolling header, and is switchable at
-runtime. `.fitsContent` lays out the whole document (no viewport
-virtualization), so prefer it for small-to-medium content. See
-``HeightBehavior`` in DocC for the full behavior.
-
-### Reading Column
-
-Give long documents a fixed-width centered column; wide GFM tables break out
-to the full window width, Google-Docs-style:
-
-```swift
-configuration.readingWidth = 650
-```
-
-Text wraps at `readingWidth` and never re-wraps on resize (only the column's
-position moves), keeping live resize smooth. Leave it `nil` (default) to fill
-the container edge-to-edge.
-
-### Scrolling Header
-
-Host a SwiftUI view above the document body that scrolls away with it —
-metadata, a property table, a contextual toolbar:
-
-```swift
-NativeTextViewWrapper(
-    text: $text,
-    header: AnyView(MyDocumentHeader(document: document)),
-    headerCollapsedHeight: 40,
-    headerExpanded: isHeaderExpanded
-)
-```
-
-The engine hosts it in an `NSHostingView`, reserves its intrinsic height, and
-keeps it fully interactive. `headerExpanded: false` collapses to
-`headerCollapsedHeight` (top row stays, rows below clip away, animated). Inject
-any required environment *before* wrapping in `AnyView`, and give wrapping
-content an explicit height so it doesn't clip at the band's bottom. Composes
-with `readingWidth`; an optional `placeholder:` shows ghost text while empty;
-`header: nil` (default) adds nothing. The demo's **Header** toggle shows it.
+A `Color` carries both appearances and is resolved at draw time, so switching
+appearance re-resolves rather than re-styles. The theme also carries the
+surfaces AppKit used to own — selection fill, caret, scroller knob, table grid
+— because nothing below this layer has an opinion about them.
 
 ### Extensions
 
 An extension is **a pair of delimiters** plus how to style what sits between
-them — that is the whole shape, and what distinguishes it from a
-[directive](#directives). The core engine parses pure markdown; constructs like
-`==highlight==`, `~~strikethrough~~`, and `::: … :::` container blocks are
-opt-in extensions:
+them. `==highlight==`, `~~strikethrough~~` and `::: … :::` are opt-in, not
+built in:
 
-```swift
-var config = MarkdownEditorConfiguration()
-config.extensions = [HighlightExtension(), StrikethroughExtension(), ContainerExtension()]
+```nim
+config.extensions = @[newHighlightExtension(),
+                      newStrikethroughExtension(),
+                      newContainerExtension()]
 ```
 
 Unregistered syntax stays literal text. An extension contributes an inline
-form (`InlineSyntax`), a fenced block form (`BlockSyntax`), or both — plus the
-attributes for its content and an HTML wrapper for rich copy. The parser owns
-all geometry, marker/fence hiding, caret reveal, and incremental restyling, so
-extensions behave identically to built-ins and cannot affect neighboring
-constructs. Conform to `MarkdownExtension` to add your own.
+form, a fenced block form, or both, plus the attributes for its content and an
+HTML wrapper for rich copy. The parser owns all the geometry, marker hiding,
+caret reveal and incremental restyling, so an extension behaves exactly like a
+built-in and cannot disturb its neighbours.
 
 ### Directives
 
-The second opt-in seam, for constructs that need a NAME and TYPED ARGUMENTS
+The second seam, for constructs that need a **name and typed arguments**
 rather than delimiters:
 
-```swift
-var config = MarkdownEditorConfiguration()
-config.directives = [FontDirective(), ColorDirective()]
+```nim
+config.directives = @[newFontDirective(), newColorDirective()]
 ```
 
 ```markdown
@@ -318,25 +227,20 @@ and the same call inside a heading keeps the heading's weight. There is no
 "applies to everything after me" form — a directive's effect is scoped to its
 own node, which is what keeps per-keystroke restyling block-local.
 
-A self-contained call draws a GLYPH in place of its own source, sized to the
-surrounding text: an SF Symbol, replacement text, or an image, chosen by the
-directive's `presentation`. The source is never removed — it collapses to zero
-width, the same mechanism inline LaTeX uses — so selection, find, copy, and
-undo still see the real characters, and the caret entering the call reveals
-them.
+A self-contained call draws a glyph in place of its own source. The source is
+never removed: it collapses to zero width, the same mechanism inline LaTeX
+uses, so selection, find, copy and undo still see the real characters, and the
+caret entering the call reveals them.
 
-The marker defaults to `@` and is configurable per registry
-(`config.directiveSettings`) and per directive, and several markers can be
-registered at once. An unregistered name stays literal text, and a directive
-only opens at a non-word character — so `name@example.com` is never a
-directive. If your app already uses `@` to trigger mentions, give directives
-their own marker instead of disambiguating at the keystroke; the
-registered-names-only rule keeps `@alice` literal, but the trigger itself is
-still shared.
+The marker defaults to `@`, is configurable per registry and per directive,
+and several can be registered at once. An unregistered name stays literal, and
+a directive only opens at a non-word character — so `name@example.com` is
+never a directive.
 
-Two limits worth knowing before you author one. A body holding a span claimed
-by an *earlier* parse pass — an inline code span, or a backslash escape —
-leaves the whole construct literal rather than producing a directive around it:
+One limit worth knowing before authoring one, inherited from the Swift and
+pinned by its tests: a body holding a span claimed by an *earlier* parse pass
+— an inline code span, or a backslash escape — leaves the whole construct
+literal rather than producing a directive around it.
 
 ```markdown
 @font(size: 18){this has `code` in it}   ← not a directive, stays as typed
@@ -347,92 +251,92 @@ Constructs claimed in the same pass or later (`$…$`, links, emphasis, nesting)
 work inside a body.
 
 **Autocomplete** covers both directive names and argument values. The engine
-detects the trigger, ranks the candidates, and routes ↑/↓/↵/Esc; you draw the
-list (the demo's picker is ~60 lines):
+detects the trigger, ranks the candidates and reports a replacement range; the
+demo draws the list in about sixty lines. Value candidates come from a
+directive's own `valueCompletionsProc`, whose default already answers anything
+the schema declares (closed keyword sets, booleans) — implement it only when
+the domain is dynamic or too large to declare. The demo's `@flag` offers every
+ISO region that way, matching on code or country name.
 
-```swift
-NativeTextViewWrapper(
-    text: $text,
-    configuration: config,
-    onCaretRectChange: { anchor = $0 },          // where to put the list
-    onInlinePreviewKey: handleKey,               // ↑/↓/↵/Esc → your list
-    onDirectiveCompletion: { completion = $0 },  // what to offer, or nil
-    pendingDirectiveCompletion: $pick            // commit a choice
-)
+`newFontDirective` and `newColorDirective` are reference implementations meant
+to be read; they are not registered unless you register them. Directives
+carrying curated data or document policy belong to the embedder —
+[`src/mdui/demodirectives.nim`](src/mdui/demodirectives.nim) has `@icon`,
+`@flag`, `@emoji` and `@pagebreak` as worked examples.
+
+## Tests
+
+```bash
+nim c -r --hints:off tests/test_all.nim
 ```
 
-Value candidates come from `MarkdownDirective.valueCompletions(for:prefix:)`,
-whose default already answers anything the schema declares (closed keyword
-sets, booleans). Implement it only when the domain is dynamic or too large to
-declare. The demo's `@flag` offers every ISO region that way, matching on code
-or localised country name, with no shipped dataset.
+451 tests across 94 suites, ported case by case from
+`Tests/MarkdownEngineTests/`. Each file names the Swift suite it came from,
+and where this port's behaviour deviates the test says so and why. The two
+worth knowing about:
 
-Conform to `MarkdownDirective` to add your own; a typical one is about 30
-lines, including its argument schema and HTML. `FontDirective` and
-`ColorDirective` are reference implementations meant to be read — they are not
-registered unless you register them. Directives carrying curated data or
-document policy belong to your app; `Demo/` has `@icon`, `@flag`, `@emoji`,
-and `@pagebreak` as worked examples, 30–60 lines each.
+- **`test_incremental.nim`** is the differential fuzz: after every random edit,
+  the incremental parse — descriptor-driven, widened-descriptor and
+  scan-driven — must produce tokens identical to a from-scratch parse. The
+  incremental path may fall back at any time; equivalence is the only
+  contract. A failing seed reproduces exactly.
+- **`test_styler.nim`**'s flattened-runs suite checks the fast attribute merge
+  against the naive loop it replaced, over randomised overlap storms, because
+  "faster" is only half the requirement.
 
-## Demo
+The suites run in one binary. The engine keeps module-level caches keyed by
+content, so sharing a process across suites is sound — and running them
+together is the only thing that would catch it if that stopped being true.
 
-A runnable SwiftUI demo lives in [`Demo/`](Demo/MarkdownEngineDemo.xcodeproj).
-Open it in Xcode and hit **Run** — the demo references the package via
-a local path, so any engine edit rebuilds into the demo on the next run.
+## Divergences from the Swift
 
-Its sample document is ordered by where each construct comes from rather than
-by feature: core markdown first, then the optional bridge products, then the
-two opt-in seams. The toolbar's **Opt-in seams** toggle unregisters the
-extensions and directives at runtime, so that last part collapses into literal
-text while the rest doesn't move a pixel — the fastest way to see what the core
-grammar actually knows.
+Everything here is deliberate, commented at the site, and pinned by a test.
 
-> If you're seeing a "missing package product" error, it's almost always
-> stale package cache. Use **File → Packages → Reset Package Caches**
-> once and rebuild.
+- **Autolinked URLs are styled explicitly.** AppKit painted a `.link` run in
+  the system link colour on its own; nothing below this layer does, so the
+  colour and underline are stated by the styler. Without this a resolving
+  wiki-link rendered as body text and read as broken.
+- **A scheme-less host gets `https`,** where `NSDataDetector` supplied `http`.
+  The detector's choice predates ubiquitous TLS; today an `http` href on a
+  TLS-only host is a dead link in a pasted document.
+- **The incomplete-link pass skips complete links.** `[[Name]]` satisfies the
+  Swift's `\[[^\]\r\n]+\](?!\()` pattern, which was harmless there only
+  because AppKit repainted the link colour afterwards.
+- **A directive's symbol name reaches the renderer as data.** The Swift
+  resolved it to an `NSImage` in the styler and fell back to literal when the
+  symbol did not exist; here the decision moves one layer down, so the
+  renderer can draw a visible fallback.
+- **`TableAlignment`'s members are `tca…`,** not `ta…`: two exported enums
+  sharing a member name make every unqualified use ambiguous in Nim.
 
-## Documentation
+Several bugs were found while porting the tests and fixed in the engine
+itself — an arithmetic overflow in scope normalisation and another in the
+wiki-link splice guard, a line-range walk that swallowed the following
+paragraph, table headers measured at body weight but drawn bold, and
+reference equality on a value-semantics paragraph style. Each has a test.
 
-Full API docs ship as DocC. In Xcode: **Product → Build Documentation**
-(`⇧⌃⌘D`); for local CLI preview see [CONTRIBUTING.md](CONTRIBUTING.md). Once
-hosted on Swift Package Index, docs will live at
-`https://swiftpackageindex.com/nodes-app/swift-markdown-engine/documentation`.
+## Layout
 
-## Requirements & Status
+```
+src/
+├── markdownengine.nim          # umbrella module
+├── markdownengine/             # the engine — std/ only, no UI
+├── mdui/                       # the UI layer — SDL3, the rasteriser, the editor
+└── mdedit.nim                  # entry point
+tests/                          # the ported suite
+vendor/sdl3.nim                 # nim-lang/sdl3, MIT
+```
 
-- macOS 14 or later (15.1+ for Apple Writing Tools integration)
-- Swift 5.9 / Xcode 15 or later
+[ARCHITECTURE.md](ARCHITECTURE.md) is the per-module tour, in the order text
+flows through the engine.
 
-MarkdownEngine is currently **pre-1.0**. The public API may change between
-minor releases as it stabilizes. Production use is fine — pin a specific
-version (`0.x.y`) in your `Package.swift`.
-
-## Who makes it
-
-<a href="https://apps.apple.com/app/apple-store/id6745401961?pt=127809373&ct=github&mt=8">
-  <img align="right" width="96" alt="Nodes" src="media/nodes-app-icon.png" />
-</a>
-
-MarkdownEngine is the editor inside **[Nodes](https://apps.apple.com/app/apple-store/id6745401961?pt=127809373&ct=github&mt=8)**,
-a macOS app for writing, linking and exploring notes. This is not a side project
-we open-sourced and walked away from — it is the editor our own users type in
-every day, and every fix here ships in a real app first.
-
-If it is useful to you, telling someone about it is all we would ask for.
-
-## Contributing
-
-Bug reports, ideas, and pull requests are welcome.
-
-- [ARCHITECTURE.md](ARCHITECTURE.md) — codemap and pipeline guide for
-  contributors
-- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, PR process, and design
-  constraints
+`Sources/`, `Tests/`, `Demo/` and `Package.swift` are the Swift original,
+kept in place as the reference this port is checked against: the Nim test
+files name the Swift suite each case came from, and the comments cite it
+where behaviour had to change. Nothing in the Nim build reads them.
 
 ## License
 
-MarkdownEngine is released under the Apache 2.0 License. See [LICENSE](LICENSE)
-for the full text.
-
----
-Built by a small team in Munich and Zurich. Day-to-day on [Instagram](https://www.instagram.com/nodes.app).
+Apache 2.0, as the original. See [LICENSE](LICENSE).
+The vendored SDL3 bindings are MIT; their notice is at the top of
+[`vendor/sdl3.nim`](vendor/sdl3.nim).

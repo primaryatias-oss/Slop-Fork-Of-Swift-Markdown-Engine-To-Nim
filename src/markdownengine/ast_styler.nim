@@ -366,6 +366,13 @@ proc detectUrls*(t: Utf16Text, within: Range): seq[Range] =
 
 func urlFromDetected*(t: Utf16Text, r: Range): string =
   ## The href an auto-linked run navigates to; a bare host gets a scheme.
+  ##
+  ## That scheme is `https`, where `NSDataDetector` supplied `http` for a
+  ## scheme-less `www.` host. The detector's choice dates from when a plain
+  ## redirect was the norm; today an `http` href on a host that only serves
+  ## TLS is a dead link in a pasted document, and the one that does serve
+  ## plaintext will redirect. A deliberate divergence, and the only one in
+  ## this function.
   let raw = t.substring(r)
   for scheme in urlSchemes:
     if raw.startsWith(scheme): return raw
@@ -461,10 +468,17 @@ proc styleAutoLinks(ctx: StylerContext, codeRanges, linkRanges: seq[Range],
       # link itself.
       if isInRanges(match, codeRanges): continue
       if isInRanges(match, linkRanges): continue
-      attrs.add (match, @[(akLink, av(urlFromDetected(ctx.text, match)))])
+      # Colour and underline are explicit here for the same reason as in the
+      # wiki-link pass: AppKit drew a `.link` run in the system link colour
+      # with an underline off the attribute alone, and nothing below this
+      # layer does that, so a bare `example.com` would read as body text.
+      attrs.add (match, @[(akLink, av(urlFromDetected(ctx.text, match))),
+                          (akUnderlineStyle, av(ulSingle)),
+                          (akForegroundColor, av(ctx.theme.link))])
 
 proc styleIncompleteLinkBrackets(ctx: StylerContext,
-                                 codeRanges, checkboxRanges: seq[Range],
+                                 codeRanges, checkboxRanges,
+                                 linkRanges: seq[Range],
                                  attrs: var seq[StyledRange]) =
   # Every pattern starts with `[`, so no `[` in the text ⇒ no match: skip the
   # whole sweep.
@@ -474,6 +488,20 @@ proc styleIncompleteLinkBrackets(ctx: StylerContext,
   for scan in ctx.scanRanges:
     for m in incompleteLinkMatches(ctx.text, scan):
       if isInRanges(m, codeRanges) or isInRanges(m, checkboxRanges): continue
+      # Also skip what the AST already recognised as a COMPLETE link or
+      # wiki-link. `[[Name]]` satisfies `\[[^\]\r\n]+\](?!\()` — the inner
+      # `[` is not excluded by the character class and the following `]` is not
+      # a `(` — so without this the pass repaints every wiki link as an
+      # incomplete one.
+      #
+      # This is a deliberate, narrow divergence from the Swift original, which
+      # leaned on AppKit rendering a `.link` run in the link colour regardless
+      # of the foreground painted into the storage. There is no text system
+      # here to do that, so the exclusion has to be explicit — otherwise a
+      # resolving wiki-link loses its link colour and a broken one stops
+      # looking broken. It is the same exclusion the auto-link pass already
+      # makes, for the same reason.
+      if isInRanges(m, linkRanges): continue
       # One range per RUN of same-coloured characters, not per character: a
       # single `[Design System]` would otherwise emit 15 ranges, and every one
       # of them is a separate storage mutation downstream.
@@ -1002,6 +1030,10 @@ proc styleWikiLink(ctx: StylerContext, r, name: Range, markers: seq[Range],
       if hasLinkID: linkID else: nodeName, name)
     if resolved and resolution.exists:
       contentAttrs.add (akLink, av(if hasLinkID: linkID else: nodeName))
+      # AppKit painted a `.link` run in the system link colour by itself; with
+      # no text system underneath to do that, the colour has to be stated, or a
+      # resolving wiki-link renders as plain body text and reads as broken.
+      contentAttrs.add (akForegroundColor, av(ctx.theme.link))
     else:
       contentAttrs.add (akForegroundColor, av(ctx.theme.disabledText))
   if contentAttrs.len > 0:
@@ -1310,5 +1342,5 @@ proc styleAST*(t: Utf16Text, config: MarkdownEditorConfiguration,
   let checkboxRanges = collectCheckboxRanges(blocks)
   let linkRanges = collectLinkRanges(blocks)
   styleAutoLinks(ctx, codeRanges, linkRanges, attrs)
-  styleIncompleteLinkBrackets(ctx, codeRanges, checkboxRanges, attrs)
+  styleIncompleteLinkBrackets(ctx, codeRanges, checkboxRanges, linkRanges, attrs)
   attrs

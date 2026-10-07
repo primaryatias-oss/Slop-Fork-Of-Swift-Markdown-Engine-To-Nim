@@ -679,8 +679,15 @@ proc offsetNodes*(nodes: seq[InlineNode], delta: int): seq[InlineNode] =
 proc offsetNode(node: InlineNode, d: int): InlineNode =
   result = node
   result.range = node.range.shifted(d)
-  result.contentRange = node.contentRange.shifted(d)
-  result.urlRange = node.urlRange.shifted(d)
+  # Only the fields the KIND actually uses are shifted. An unused field is not
+  # "a range at 0", it is absent; shifting it would make two structurally
+  # identical nodes compare unequal depending on whether they came back from a
+  # sub-parse or straight from the top level. Node equality is what the
+  # incremental-equivalence checks rest on, so that difference matters.
+  if node.kind != inText:
+    result.contentRange = node.contentRange.shifted(d)
+  if node.kind in {inLink, inImage}:
+    result.urlRange = node.urlRange.shifted(d)
   if node.hasID: result.idRange = node.idRange.shifted(d)
   result.markers = @[]
   for m in node.markers: result.markers.add m.shifted(d)

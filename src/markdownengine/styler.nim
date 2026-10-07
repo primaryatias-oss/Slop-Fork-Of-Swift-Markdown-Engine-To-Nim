@@ -506,16 +506,21 @@ proc measureTable*(parsed: ParsedTable, tm: TextMetrics, widths: WidthCache,
   if columnCount == 0: return TableMetrics()
   var columnWidths = newSeq[float](columnCount)
 
-  proc consider(cell: string, col: int) =
+  # The renderer draws the header row bold, so the header has to be MEASURED
+  # bold. Measuring it at body weight is how a header word ends up overflowing
+  # its own column and running through the grid line beside it.
+  let headerFont = font.adding({ftBold})
+
+  proc consider(cell: string, col: int, cellFont: FontDesc) =
     var widest = 0.0
     for line in expandCellLineBreaks(cell).splitLines():
-      widest = max(widest, textWidth(widths, tm, line, font))
+      widest = max(widest, textWidth(widths, tm, line, cellFont))
     columnWidths[col] = max(columnWidths[col], widest + 2 * tableCellHPadding)
 
   for col in 0 ..< columnCount:
-    if col < parsed.header.len: consider(parsed.header[col], col)
+    if col < parsed.header.len: consider(parsed.header[col], col, headerFont)
   for row in parsed.rows:
-    for col in 0 ..< min(columnCount, row.len): consider(row[col], col)
+    for col in 0 ..< min(columnCount, row.len): consider(row[col], col, font)
 
   var total = 0.0
   for w in columnWidths: total += w
@@ -536,20 +541,20 @@ proc measureTable*(parsed: ParsedTable, tm: TextMetrics, widths: WidthCache,
         if columnWidths[i] > floorWidth:
           columnWidths[i] -= (columnWidths[i] - floorWidth) * ratio
 
-  let lh = lineHeight(tm, font)
-  proc rowHeight(cells: seq[string]): float =
+  let lh = max(lineHeight(tm, font), lineHeight(tm, headerFont))
+  proc rowHeight(cells: seq[string], cellFont: FontDesc): float =
     var lines = 1
     for col in 0 ..< min(columnCount, cells.len):
       var cellLines = 0
       let avail = max(1.0, columnWidths[col] - 2 * tableCellHPadding)
       for line in expandCellLineBreaks(cells[col]).splitLines():
-        let w = textWidth(widths, tm, line, font)
+        let w = textWidth(widths, tm, line, cellFont)
         cellLines += max(1, int(ceil(w / avail)))
       lines = max(lines, cellLines)
     float(lines) * lh + 2 * tableCellVPadding
 
-  var rowHeights = @[rowHeight(parsed.header)]
-  for row in parsed.rows: rowHeights.add rowHeight(row)
+  var rowHeights = @[rowHeight(parsed.header, headerFont)]
+  for row in parsed.rows: rowHeights.add rowHeight(row, font)
   var totalHeight = float(rowHeights.len + 1) * tableBorderWidth
   for h in rowHeights: totalHeight += h
   TableMetrics(columnWidths: columnWidths, rowHeights: rowHeights,

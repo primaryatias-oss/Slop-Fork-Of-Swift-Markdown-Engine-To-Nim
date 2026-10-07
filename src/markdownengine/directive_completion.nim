@@ -70,6 +70,20 @@ type
     hasCaretOffset*: bool
     applied*: bool
 
+proc completionRequest*(documentID: string,
+                        context: DirectiveCompletionContext,
+                        item: CompletionCandidate): DirectiveCompletionRequest =
+  ## Commit object for a picked candidate: where to write, what to write, and
+  ## where the caret lands. The embedder's picker builds one of these and
+  ## hands it to the editor, so the UI never has to know how a snippet's
+  ## caret marker was resolved.
+  DirectiveCompletionRequest(documentID: documentID,
+                             replacementRange: context.replacementRange,
+                             insertion: item.insertion,
+                             caretOffset: item.caretOffset,
+                             hasCaretOffset: item.hasCaretOffset,
+                             applied: false)
+
 const maxScanback = 256
   ## Longest name we will scan backwards over before giving up. Bounds the work
   ## per caret move to a constant, independent of line length.
@@ -309,8 +323,10 @@ proc argumentContext(t: Utf16Text, caret, openParen: int, marker: uint16,
 
   var candidates: seq[CompletionCandidate] = @[]
   for item in d.valueCompletions(parameter, prefix):
-    candidates.add CompletionCandidate(title: item.title, subtitle: item.subtitle,
-                                       insertion: item.insertion)
+    candidates.add CompletionCandidate(
+      title: item.title, subtitle: item.subtitle, detail: item.detail,
+      insertion: item.insertion, caretOffset: item.caretOffset,
+      hasCaretOffset: item.hasCaretOffset, symbolName: item.symbolName)
   if candidates.len == 0: return (DirectiveCompletionContext(), false)
 
   (DirectiveCompletionContext(

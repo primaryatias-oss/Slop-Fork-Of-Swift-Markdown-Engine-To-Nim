@@ -356,8 +356,21 @@ type
   DirectiveCompletionItem* = object
     ## One row the embedder's picker shows for an argument VALUE.
     title*: string
+      ## Primary text, e.g. `font` or `JP`.
     subtitle*: string
+      ## Secondary text, e.g. a description or a country name.
+    detail*: string
+      ## Optional preview of the RESULT — the flag for a country code, the
+      ## glyph for a symbol. Shown by the picker; never inserted. Empty means
+      ## none.
     insertion*: string
+      ## Text that replaces the completion context's replacement range.
+    caretOffset*: int
+      ## Caret position within `insertion` after the pick.
+    hasCaretOffset*: bool
+      ## False lands the caret at the end of `insertion`.
+    symbolName*: string
+      ## Symbol for the row; empty means none.
 
   DirectiveCompletion* = object
     ## What the embedder's picker shows for a directive. Synthesised from the
@@ -372,9 +385,15 @@ type
       ## reports the offset when it applies the replacement.
     symbolName*: string
 
-func completionItem*(title: string, subtitle = "", insertion = ""): DirectiveCompletionItem =
-  DirectiveCompletionItem(title: title, subtitle: subtitle,
-                          insertion: if insertion.len > 0: insertion else: title)
+func completionItem*(title: string, subtitle = "", insertion = "",
+                     detail = "", symbolName = "",
+                     caretOffset = 0,
+                     hasCaretOffset = false): DirectiveCompletionItem =
+  DirectiveCompletionItem(title: title, subtitle: subtitle, detail: detail,
+                          insertion: if insertion.len > 0: insertion else: title,
+                          caretOffset: caretOffset,
+                          hasCaretOffset: hasCaretOffset,
+                          symbolName: symbolName)
 
 # ---------------------------------------------------------------------------
 # Registry settings
