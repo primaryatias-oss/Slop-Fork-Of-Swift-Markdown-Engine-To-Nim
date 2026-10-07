@@ -1,17 +1,10 @@
-# macOS
+# Nim build output
+nimcache/
+/mdedit
+/tests/test_all
+/tests/*.out
+*.o
+
+# Editor / OS noise
 .DS_Store
-
-# Swift Package Manager
-/.build
-/.swiftpm/xcode
-Package.resolved
-
-# Xcode
-xcuserdata/
-DerivedData/
-*.xcodeproj/project.xcworkspace/xcuserdata/
-*.xcodeproj/xcuserdata/
-
-# Generated documentation
-/docs
-*.doccarchive
+*.swp
