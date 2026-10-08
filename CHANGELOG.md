@@ -2,6 +2,13 @@
 
 All notable changes to swift-markdown-engine are documented in this file.
 
+> Kept as the behavioural lineage this Nim port inherits: the entries below
+> describe the Swift engine whose semantics the port reproduces, so a
+> question of the form "why does it do that?" usually has its answer here.
+> Paths they name (`Sources/`, `Demo/`, …) are the Swift project's, in
+> [nodes-app/swift-markdown-engine](https://github.com/nodes-app/swift-markdown-engine),
+> not this repository's.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

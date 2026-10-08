@@ -10,27 +10,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Build & Test (macOS)
-    runs-on: macos-15
-    steps:
-      - name: Check out
-        uses: actions/checkout@v7
-
-      - name: Select Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
-
-      - name: Show Swift version
-        run: swift --version
-
-      - name: Build
-        run: swift build -v
-
-      - name: Test
-        run: swift test --parallel
-
   nim:
     name: Build & Test (Linux)
     runs-on: ubuntu-latest
