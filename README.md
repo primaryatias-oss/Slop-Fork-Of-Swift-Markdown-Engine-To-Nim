@@ -288,6 +288,13 @@ The suites run in one binary. The engine keeps module-level caches keyed by
 content, so sharing a process across suites is sound — and running them
 together is the only thing that would catch it if that stopped being true.
 
+CI runs them on `ubuntu-latest` (`.github/workflows/ci.yml`, the
+*Build & Test (Linux)* job), then builds the editor and renders one frame
+headlessly. The suite itself needs no SDL3: the bindings `dlopen` lazily and
+nothing under test reaches an SDL call, so it runs before SDL3 is even built
+and a logic failure reports in seconds. SDL3 is built from source there
+because it is not packaged for Ubuntu 24.04, and cached between runs.
+
 ## Divergences from the Swift
 
 Everything here is deliberate, commented at the site, and pinned by a test.

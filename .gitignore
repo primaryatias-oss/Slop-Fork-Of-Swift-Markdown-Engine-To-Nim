@@ -8,6 +8,10 @@ nimcache/
 /tests/*.out
 *.o
 
+# CI builds SDL3 from source into this prefix (it is not packaged for Ubuntu)
+# and caches it between runs.
+/.sdl3/
+
 # Editor / OS noise
 .DS_Store
 *.swp
