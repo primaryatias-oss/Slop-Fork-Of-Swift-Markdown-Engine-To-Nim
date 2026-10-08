@@ -270,10 +270,11 @@ carrying curated data or document policy belong to the embedder —
 nim c -r --hints:off tests/test_all.nim
 ```
 
-451 tests across 94 suites, ported case by case from
+451 tests across 94 suites, ported case by case from the Swift project's
 `Tests/MarkdownEngineTests/`. Each file names the Swift suite it came from,
-and where this port's behaviour deviates the test says so and why. The two
-worth knowing about:
+and where this port's behaviour deviates the test says so and why. Those
+suite names refer to [the upstream repository](https://github.com/nodes-app/swift-markdown-engine) —
+the Swift sources are no longer carried here. The two worth knowing about:
 
 - **`test_incremental.nim`** is the differential fuzz: after every random edit,
   the incremental parse — descriptor-driven, widened-descriptor and
@@ -337,10 +338,12 @@ vendor/sdl3.nim                 # nim-lang/sdl3, MIT
 [ARCHITECTURE.md](ARCHITECTURE.md) is the per-module tour, in the order text
 flows through the engine.
 
-`Sources/`, `Tests/`, `Demo/` and `Package.swift` are the Swift original,
-kept in place as the reference this port is checked against: the Nim test
-files name the Swift suite each case came from, and the comments cite it
-where behaviour had to change. Nothing in the Nim build reads them.
+The Swift original is not vendored here. It was carried through the port as
+the reference each test was checked against, then removed once the port
+stood on its own; the test files and the divergence notes still name the
+Swift suites and types they came from, which live in
+[nodes-app/swift-markdown-engine](https://github.com/nodes-app/swift-markdown-engine).
+Repository history has the full Swift tree if a side-by-side is ever wanted.
 
 ## License
 

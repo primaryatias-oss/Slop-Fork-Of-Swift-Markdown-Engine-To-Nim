@@ -287,7 +287,10 @@ and more forgiving — and it is what makes bold-off inside `***both***` produce
 
 `tests/` mirrors `Tests/MarkdownEngineTests/` from the Swift, case by case.
 Each file names the suite it came from; where this port diverges, the test
-says so and why.
+says so and why. Those suites are in
+[nodes-app/swift-markdown-engine](https://github.com/nodes-app/swift-markdown-engine), not
+in this repository — the Swift tree was removed once the port stood on its
+own, and is in this repository's history if a side-by-side is wanted.
 
 The engine-level suites need no fonts and no window: they measure through
 `defaultTextMetrics`. The UI-level ones (`test_tables.nim`'s cell formatting,
