@@ -30,3 +30,87 @@ jobs:
 
       - name: Test
         run: swift test --parallel
+
+  nim:
+    name: Build & Test (Linux)
+    runs-on: ubuntu-latest
+    env:
+      # SDL3 is not packaged for Ubuntu 24.04 (`apt-cache search libsdl3` is
+      # empty), so it is built from source and cached. Note that SDL releases
+      # use EVEN micro versions — 3.2.31 is a development snapshot of the
+      # release-3.2.x branch, not a tag — so bumping this must land on an even
+      # number or the clone fails.
+      SDL3_VERSION: 3.2.30
+      SDL3_PREFIX: ${{ github.workspace }}/.sdl3
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2.3.1
+        with:
+          nim-version: '2.2.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install fonts and build dependencies
+        # The rasteriser reads real TrueType files rather than asking a system
+        # text stack for glyphs, so the font families its groups look for have
+        # to be on disk. DejaVu ships Sans and Serif in -core and Mono in its
+        # own package; Liberation is the fallback group and carries true
+        # italics for all three.
+        #
+        # The X11 headers are for SDL's own configure: without them it builds
+        # with the dummy video driver alone, which would still pass the smoke
+        # test below but would not be the library a user installs.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fonts-dejavu-core fonts-dejavu-mono fonts-liberation \
+            ninja-build \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxfixes-dev libxss-dev
+
+      # Before SDL3, deliberately. The bindings dlopen lazily and nothing under
+      # test reaches an SDL call, so the suite needs no SDL3 at all — running
+      # it first means a logic failure reports in seconds instead of waiting
+      # out a library build.
+      - name: Test
+        run: nim c -r --hints:off tests/test_all.nim
+
+      - name: Cache SDL3
+        id: sdl3-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SDL3_PREFIX }}
+          key: sdl3-${{ runner.os }}-${{ env.SDL3_VERSION }}
+
+      - name: Build SDL3
+        if: steps.sdl3-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "release-${SDL3_VERSION}" \
+            https://github.com/libsdl-org/SDL.git "${RUNNER_TEMP}/SDL"
+          cmake -S "${RUNNER_TEMP}/SDL" -B "${RUNNER_TEMP}/SDL/build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="${SDL3_PREFIX}" \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF \
+            -DSDL_TEST_LIBRARY=OFF -DSDL_EXAMPLES=OFF
+          cmake --build "${RUNNER_TEMP}/SDL/build" --parallel
+          cmake --install "${RUNNER_TEMP}/SDL/build"
+
+      - name: Build the editor
+        run: nim c -d:release --hints:off -o:mdedit src/mdedit.nim
+
+      - name: Headless render smoke test
+        # A frame that draws nothing still exits 0, so the check is the summary
+        # the frame reports: a real document's glyph, line and run counts. The
+        # dummy video driver needs no display.
+        env:
+          LD_LIBRARY_PATH: ${{ env.SDL3_PREFIX }}/lib
+          SDL_VIDEODRIVER: dummy
+        run: |
+          summary=$(./mdedit --render-once)
+          echo "$summary"
+          case "$summary" in
+            *"laid-out glyphs"*) ;;
+            *) echo "::error::the frame reported no glyphs"; exit 1 ;;
+          esac

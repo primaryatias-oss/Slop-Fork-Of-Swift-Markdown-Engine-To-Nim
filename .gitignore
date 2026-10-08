@@ -1,17 +1,17 @@
-# macOS
+# Nim build output
+nimcache/
+/mdedit
+# Every test module compiles to a binary beside its source; `test_all` links
+# them all into one, which is what `nimble test` runs.
+/tests/test_*
+!/tests/test_*.nim
+/tests/*.out
+*.o
+
+# CI builds SDL3 from source into this prefix (it is not packaged for Ubuntu)
+# and caches it between runs.
+/.sdl3/
+
+# Editor / OS noise
 .DS_Store
-
-# Swift Package Manager
-/.build
-/.swiftpm/xcode
-Package.resolved
-
-# Xcode
-xcuserdata/
-DerivedData/
-*.xcodeproj/project.xcworkspace/xcuserdata/
-*.xcodeproj/xcuserdata/
-
-# Generated documentation
-/docs
-*.doccarchive
+*.swp

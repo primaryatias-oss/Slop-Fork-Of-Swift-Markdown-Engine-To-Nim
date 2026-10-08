@@ -1,267 +1,330 @@
 # Architecture
 
-## Source layout
+A codemap for the Nim port, in the order text flows through it. The Swift
+original's architecture doc described the same pipeline; where a stage was
+rewritten rather than translated, this says so and why.
 
-```bash
-Sources/
-├── MarkdownEngine/                          # core target — zero deps
-│   ├── Configuration/                       # MarkdownEditorConfiguration + MarkdownEditorTheme
-│   ├── Extensions/                          # the extension seam: MarkdownExtension + bundled opt-ins
-│   ├── Directives/                          # the directive seam: @font(size: 18){…} — parsing, styling, glyphs, completion
-│   ├── Services/                            # 4 protocols, no-op defaults, WikiLinkService
-│   ├── Parser/                              # two-phase AST: BlockParser → InlineParser → DocumentAST (+ token projection)
-│   ├── Styling/                             # MarkdownASTStyler (AST walk) + MarkdownStyler facade for NSImage passes
-│   ├── Renderer/                            # LayoutBridge, MarkdownTextLayoutFragment, EmbeddedImageCache
-│   ├── Input/                               # MarkdownInputHandler + MarkdownListHandler
-│   ├── TextView/
-│   │   ├── NativeTextViewWrapper.swift      # SwiftUI entry point (NSViewRepresentable)
-│   │   ├── NativeTextViewContainer.swift    # the scroll view's documentView: header band + text column stacking
-│   │   ├── ScrollingHeaderController.swift  # scroll-away header: hosting, collapse/expand, teardown
-│   │   ├── ClampedScrollView.swift          # scroll range clamped to real content height
-│   │   ├── NativeTextView/                  # AppKit subclass + UX extensions (paste, drag-select, …)
-│   │   └── Coordinator/                     # NSTextViewDelegate split by concern (restyling, find, …)
-│   └── MarkdownEngine.docc/                 # DocC catalog
-├── MarkdownEngineCodeBlocks/                # opt-in SPM product — pulls in HighlighterSwift
-│   └── HighlighterSwiftBridge.swift         # SyntaxHighlighter conformance
-└── MarkdownEngineLatex/                     # opt-in SPM product — pulls in SwiftMath
-    └── SwiftMathBridge.swift                # LatexRenderer conformance
+## The two halves
+
+```
+src/
+├── markdownengine.nim          # umbrella: imports and re-exports everything below
+├── markdownengine/             # ENGINE — std/ only. No SDL3, no rasteriser, no window.
+│   ├── ranges.nim              # Range (NSRange), scope normalisation
+│   ├── utf16text.nim           # Utf16Text over seq[uint16]; line/paragraph walks
+│   ├── color.nim               # Rgba, Color (light+dark), the system palette
+│   ├── font.nim                # FontDesc (data), TextMetrics (injected procs)
+│   ├── attributes.nim          # AttrKey / AttrValue / Attrs, ParagraphStyle
+│   ├── theme.nim               # every colour the editor puts on screen
+│   ├── configuration.nim       # every spacing / sizing / behaviour knob
+│   ├── services.nim            # the four embedder seams + the editor bus
+│   ├── extension.nim           # the extension seam and both registries
+│   ├── directive*.nim          # the directive seam: value model, scanner, completion
+│   ├── builtin_directives.nim  # @font and @color, reference implementations
+│   ├── block_parser.nim        # phase 1: text → tiling [Block]
+│   ├── inline_parser.nim       # phase 2: a block's text → [InlineNode]
+│   ├── ast.nim                 # the two combined → [BlockNode]
+│   ├── token.nim               # MarkdownToken — a PROJECTION of the AST
+│   ├── tokenizer.nim           # the projection, with its caches
+│   ├── parse_state.nim         # DocumentParseState: the incremental splice
+│   ├── detection.nim           # active tokens, code/latex containment, the backtick census
+│   ├── lists.nim               # list / blockquote / task line scanners
+│   ├── table.nim               # GFM table source → header / alignments / rows
+│   ├── wikilink.nim            # the [[Name|id]] ↔ [[Name]] transform
+│   ├── ast_styler.nim          # THE styler: one AST walk, compose on descent
+│   ├── styler.nim              # the artefact passes + styleAttributes, the facade
+│   ├── html_renderer.nim       # markdown → HTML, for rich copy
+│   ├── html_to_markdown.nim    # HTML → markdown, for smart paste
+│   ├── clipboard.nim           # flavour packaging and paste resolution
+│   └── input.nim               # typing helpers as pure decisions
+├── mdui/                       # UI — SDL3, the rasteriser, layout, the editor
+│   ├── sdlbridge.nim           # the vendored bindings, minus one name collision
+│   ├── truetype.nim            # sfnt parser + scanline rasteriser
+│   ├── fontmanager.nim         # family groups, fallback cascade, measurement
+│   ├── textstorage.nim         # run-based attributed string
+│   ├── layout.nim              # line breaking, caret geometry, hit testing
+│   ├── painter.nim             # rects, lines, clipping, image decode
+│   ├── atlas.nim               # the glyph atlas on SDL textures
+│   ├── render.nim              # the ordered draw passes for a document
+│   ├── tablerender.nim         # the table grid, drawn not rasterised
+│   ├── editor.nim              # selection, editing, undo, find, scrolling
+│   ├── widgets.nim             # buttons, scroller, find bar, context menu
+│   ├── app.nim                 # the demo: samples, toolbar, event loop
+│   ├── demodirectives.nim      # @icon, @flag, @emoji, @pagebreak
+│   └── screenshot.nim          # PNG writer (stored DEFLATE) and frame capture
+└── mdedit.nim                  # entry point
 ```
 
-The rest of this file is a per-directory tour, in the order text flows
-through the engine.
+The split is load-bearing. `src/markdownengine/` imports nothing outside
+`std/`: it can be used without a window, it is what the engine-level tests
+exercise, and it is where every behaviour the Swift specified lives.
+`src/mdui/` is everything AppKit used to provide.
 
-## [`Parser/`](Sources/MarkdownEngine/Parser): text → AST → tokens
+## UTF-16 is the currency
 
-A two-phase AST pipeline following CommonMark's model — block structure first,
-inline content second. There is no regex tokenizer anymore; the structural
-regexes are gone, replaced by hand-written scanners and a real syntax tree.
+Every range, every marker, every cache key is a UTF-16 offset, because the
+Swift's were `NSRange`s and the whole engine was written against them.
+`Utf16Text` is a `seq[uint16]` with the `NSString` walks the engine needs —
+`lineRange`, `paragraphRange`, `rangeOf` — reproduced exactly, including the
+distinction that U+2028 ends a *line* while U+2029 and `\n` end a
+*paragraph*. Everything scoped per paragraph depends on that difference.
 
-1. **`BlockParser`** splits the document into a flat, gap-free (tiling)
-   sequence of `Block`s: `heading`, `paragraph`, `blockquote`, `list`,
-   `fencedCode`, `blockLatex`, `table`, `thematicBreak`, `blank`. Hand-written
-   line scanners. It memoizes the last parse (UTF-16 buffer cache) so the
-   per-keystroke callers share one line-scan.
-2. **`InlineParser`** turns a single inline-bearing block's text into an inline
-   AST (`[InlineNode]`) with correct CommonMark precedence: code spans →
-   escapes → link family (`![[…]]`, `[[…]]`, `![…](…)`, `[…](…)`, `~~…~~`,
-   `$…$`) → emphasis (`*`/`_` delimiter runs) → `buildTree`. Each pass claims
-   spans only in regions not already claimed, so there are never partial
-   overlaps and the tree is a clean containment tree. That invariant is also
-   what keeps the pass linear in span count: claimed ranges are consulted
-   through a cursor rather than rescanned, and `buildTree` derives containment
-   from a sort instead of comparing spans pairwise.
-3. **`MarkdownAST` / `DocumentAST.parse`** combines the two into the semantic
-   document AST — `[BlockNode]`, each inline-bearing block carrying its parsed
-   `[InlineNode]` children in absolute document coordinates. `BlockNode`,
-   `InlineNode`, and `ListItem` are defined here.
+Converting at the boundary and working in runes internally was the obvious
+alternative and the wrong one: every offset in every ported test, every
+marker range, every `scopedRanges` entry would have had to move with it.
 
-**Tokens are now a projection of the AST, not the source of truth.**
-`MarkdownTokenizer` is just a namespace; its entry point `parseTokensViaAST`
-(implemented in **`BlockScopedTokenizer`** — the live tokenization pipeline)
-walks each `BlockParser` block and emits the legacy flat `[MarkdownToken]`
-shape: block-level tokens (heading, blockquote, fenced code, table, block
-LaTeX) come from **`BlockLevelTokenizer`** (hand scanners), inline tokens from
-the AST via **`InlineASTAdapter`** (`[InlineNode]` → `[MarkdownToken]`). Token
-shapes are reproduced 1:1 from the old regex tokenizer (parity-checked), so the
-consumers that still read tokens — the NSImage render passes, code-block
-handling, `MarkdownInputHandler`, `ContextMenu`, and `MarkdownDetection`
-(caret-aware active-token indices) — keep working unchanged.
+## `markdownengine/` — text → AST → tokens
 
-**Invariant:** Ranges everywhere are absolute UTF-16 `NSRange`s into the source
-(the editor is TextKit-2 / `NSTextView`-based, so UTF-16 offsets are the native
-currency).
+Two phases, following CommonMark's model. There is no regex anywhere; every
+pattern the Swift expressed as an `NSRegularExpression` is a hand-written
+scanner here, for the plain reason that `std/re` and `std/nre` wrap PCRE.
 
-**Invariant:** Parsing is incremental. With `scopedRanges`, `DocumentAST.parse`
-parses inlines only for blocks intersecting the edit, and `BlockScopedTokenizer`
-memoizes per-block tokens (substring → tokens, FIFO-capped) — so a keystroke
-re-parses one block, not the whole document (≈ O(edit)).
+**1. `block_parser.nim`** splits the document into a flat, gap-free
+(*tiling*) sequence of `Block`s: heading, paragraph, blockquote, list, fenced
+code, block LaTeX, table, thematic break, blank, and extension blocks. Tiling
+is pinned by the tests: a block that grows has to shrink its neighbour, so a
+bug surfaces here rather than three passes later as a mis-styled run. The
+module memoises its last parse, keyed by the buffer, so the several
+per-keystroke callers share one line scan.
 
-## [`Extensions/`](Sources/MarkdownEngine/Extensions): opt-in constructs beyond pure markdown
+**2. `inline_parser.nim`** turns one inline-bearing block's text into an
+inline AST with CommonMark precedence: code spans → escapes → link family
+(`![[…]]`, `[[…]]`, `![…](…)`, `[…](…)`, extension spans, directives, `$…$`)
+→ emphasis (delimiter runs) → `buildTree`. Each pass claims spans only in
+regions no earlier pass claimed, so claimed spans are either disjoint or
+properly nested and the tree is a clean containment tree.
 
-`MarkdownExtension` contributes an inline span form (`InlineSyntax`, e.g.
-`==highlight==`), a fenced block form (`BlockSyntax`, e.g. `::: … :::`), or
-both — plus content attributes and an HTML wrapper for the clean-copy path.
-Registered via `MarkdownEditorConfiguration.extensions`; unregistered syntax
-stays literal text. Extensions never emit ranges — the parser derives all
-geometry — and every parse cache keys on the registry fingerprint, so the
-registered set can change at runtime.
+That invariant is what keeps the parse linear in span count: claimed ranges
+are consulted through a cursor rather than rescanned, and `buildTree` derives
+containment from a sort instead of comparing spans pairwise. `InlineParseCost`
+counts both quantities so the density tests can assert on a pure function of
+the input rather than on elapsed time — identical on a laptop and on a loaded
+CI runner, and quadratic versus linear differ by orders of magnitude rather
+than by 1.4×.
 
-**Invariant:** built-in constructs always classify first; an extension can
-never take text away from core markdown.
+`InlineNode` is a flat record with an `InlineNodeKind` tag, where the Swift
+had an enum with associated values. Most kinds share `range`, `markers` and
+`contentRange`; every consumer switches on the kind; and the adapter, styler
+and HTML renderer all want uniform access to the shared geometry. The cost is
+that unused fields exist per node, which matters once — `offsetNode` shifts
+only the fields the kind actually uses, or two structurally identical nodes
+would compare unequal depending on whether they came back from a sub-parse.
 
-## [`Directives/`](Sources/MarkdownEngine/Directives): named inline commands
+**3. `ast.nim`** combines the two into `[BlockNode]`, each inline-bearing
+block carrying its children in absolute document coordinates. `parseDocument`
+takes `scopedRanges`: in scoped mode it builds `BlockNode`s only for blocks
+the edit touched, walking blocks and sorted scopes together in one sweep
+rather than scanning every scope per block.
 
-`MarkdownDirective` is the extension seam's sibling for constructs that need a
-NAME and TYPED ARGUMENTS rather than delimiters — `@pagebreak`,
-`@font(size: 18){text}`. Registered via `MarkdownEditorConfiguration.directives`;
-the marker defaults to `@` and is configurable per registry and per directive.
+**Tokens are a projection of the AST, not the source of truth.**
+`tokenizer.nim` walks the tree and emits one `MarkdownToken` per markup node,
+reproducing the flat, overlapping token set the pre-AST code produced —
+because the caret-reveal logic, the copy path and the find highlighting all
+read tokens, and rewriting them all was not the port's job. Two caches sit
+here: a per-block memo keyed by `(kind, extensionID, text)`, and
+`incrementalTokens`, which shifts the tokens after an edit instead of
+re-emitting them.
 
-Two forms, both **tree-shaped** — a directive's effect never escapes its own
-node: **self-contained** (`@pagebreak`, a leaf that draws a glyph in place of
-its collapsed source) and **container** (`@font(size: 18){text}`, whose body is
-re-parsed as markdown). There is deliberately no "applies to everything after
-me" form: that would make styling depend on document position rather than tree
-position, breaking both the styler's compose-on-descent model and the
-block-scoped incremental restyle.
+**`parse_state.nim`** is where the incremental story lands. `DocumentParseState`
+splices buffer, blocks and tokens under one edit descriptor. With a
+trustworthy descriptor the update is O(edit + touched blocks + suffix shift);
+without one, a single shared diff scan replaces two independent ones. It may
+fall back to a full parse at any time, and the differential fuzz in
+`tests/test_incremental.nim` exists because equivalence is the only contract
+worth stating: the fast path is free to give up, never to be wrong.
 
-The glyph rides the same mechanism inline LaTeX uses: the characters stay in
-the text, the first one carries the image and enough kern to occupy its width,
-the rest collapse to zero width. A glyph that can't be produced (an unknown SF
-Symbol, or `.literal`) leaves the source visible rather than collapsing it to a
-gap the user can't see or fix.
+The guard that makes the splice sound is `hasBlockDelimiter`. Any edit
+touching a line that carries ``` ``` ``` or `$$` — or a registered extension
+fence — forces the full reparse, because those pair at a distance and the
+pairing of every fence below can change. It is line-expanded rather than
+±3 around the edit, since block delimiters are classified from a trimmed
+prefix and editing the leading whitespace of an indented `$$` flips the
+pairing from arbitrarily far away from the literal `$$`.
 
-Container styling lives in `MarkdownASTStyler+Directives.swift`: it resolves the
-directive, coerces its arguments against the declared schema, and returns the
-composed font the body's children inherit — one more step in the styler's
-existing compose-on-descent walk. `MarkdownHTMLRenderer` recovers arguments from
-the same prefix geometry, so rich copy and on-screen styling cannot disagree
-about what was passed.
+## `markdownengine/ast_styler.nim` — one walk, composing on descent
 
-`DirectiveScanner` runs from `InlineParser.matchClaimedSpan` after every
-built-in, so a directive can never take text away from core markdown. Matches
-project into the AST as **extension-shaped nodes** (`InlineNode.ext`) under the
-reserved `directive.` id namespace, rather than as a new node kind — so
-`InlineNode`, `buildTree`, `offsetNodes`, `InlineASTAdapter`, `MarkdownToken`,
-and `shrinkInlineMarkers` are untouched, and directives inherit marker shrink,
-caret reveal, token projection, incremental restyle, and rich copy unchanged.
+The single most important file. It walks the AST once, carrying the font down
+the tree and **composing** rather than overwriting: a heading sets a large
+bold font, descending into `**bold**` adds the trait and keeps the size,
+descending again into `*italic*` adds that trait and keeps both. This is what
+the flat multi-pass styler it replaced got wrong, and `# **n*o*des**` — where
+the middle letter rendered at a different size — is the case that named it.
 
-`DirectiveRegistry` is carried BY `ExtensionRegistry`, so the directive
-fingerprint folds into the one grammar fingerprint every parse cache already
-keys on — registering a directive at runtime invalidates those caches with no
-second key threaded through the pipeline. A directive-free registry produces a
-byte-identical fingerprint to before the seam existed, so no existing document
-re-parses.
+Two rules run through the whole file:
 
-Arguments are coerced against the declared schema at STYLING time, not parse
-time: the parser stays geometry-only, and a directive-free document pays
-nothing.
+**Markers shrink, they never disappear.** An inactive syntax marker is
+rendered at `hiddenMarkerFontSize` (0.1pt) with negative kern, not removed
+from the storage. Selection, find, copy and undo therefore all see the real
+characters, and the document you edit is the markdown you save. Every
+collapse in the port — markers, a self-contained directive's source, a hidden
+task checkbox's `[ ] ` — is the same mechanism.
 
-**Invariant:** registered names only. `@home` in prose stays literal text unless
-`home` is registered — the property that makes the seam safe to enable over an
-existing corpus.
+**The caret reveals.** A construct the caret is inside renders its syntax
+muted instead of collapsed. `detection.nim` computes the active token set;
+the styler asks `isActive` per range. The one exception is the ordered-list
+display number, which is positional rather than authored: revealing the source
+digit under the caret renamed the item the reader was pointing at, so the
+overlay stays put for the caret *and* for a selection.
 
-**Invariant:** a directive opens only after a non-word character, so
-`name@example.com` never opens one.
+`styler.nim` wraps the AST walk with the artefact passes — block LaTeX, inline
+LaTeX, image embeds, image links, tables — and exposes `styleAttributes`, the
+one public entry point. It returns overlapping `StyledRange`s in emission
+order: later ranges win per key, which `flattenedRuns` collapses when a caller
+wants one write per character.
 
-**Invariant:** every rejection — unregistered name, malformed call, wrong form,
-unbalanced or multi-line run — leaves the candidate literal. Nothing here can
-produce a partial construct.
+## The two seams
 
-### Autocomplete
+**Extensions** (`extension.nim`) are *delimiter-shaped*: an open string, a
+close string, whether the content is re-parsed. `==highlight==`,
+`~~strikethrough~~` and `::: … :::` are built with the same seam an embedder
+would use, and unregistered syntax stays literal text. The registry
+fingerprints itself with length-prefixed fields so a concatenation of
+free-text names cannot alias another registry — the fingerprint keys the parse
+caches, and a grammar change has to invalidate them.
 
-`DirectiveCompletionScanner` answers "what is the caret completing?" — a
-directive NAME (`@fo|`) or one of its ARGUMENT VALUES (`@icon(sta|`). It cannot
-use the AST: mid-typing, `@ico` and `@icon(sta` are precisely what the parser
-REJECTS, so it is a separate, forgiving backwards scan over the current line,
-bounded to 256 characters per caret move. It reuses the parser's boundary rule,
-so it can never offer a directive the parser would refuse.
+**Directives** (`directive*.nim`) are *name-shaped*: a name, typed arguments,
+and a body. `@font(size: 18){…}` is the motivating case, and the reason the
+seam exists is that no delimiter pair can express a typed argument.
 
-The engine owns the CANDIDATES because it owns the registry — names come from
-the registered directives, values from `MarkdownDirective.valueCompletions`,
-whose default answers whatever the declared schema can (closed keyword sets,
-booleans). A directive only implements it when its domain is dynamic or too
-large to declare, which is how `@flag` offers every ISO region without shipping
-a dataset. A newly registered directive therefore appears in the picker with no
-embedder change.
+Four files:
 
-The engine ships **no picker UI**, exactly as for `[[wiki-links]]`: it publishes
-the context through `onDirectiveCompletion`, reports the anchor via
-`onCaretRectChange`, routes ↑/↓/↵/Esc through `onInlinePreviewKey`, and applies
-a pick pushed into `pendingDirectiveCompletion`. Detection and commit live in
-`Coordinator/NativeTextViewCoordinator+Directives.swift`; the commit path is
-deliberately separate from `applyInlineReplacement`, which runs the wiki-link
-storage/display transform.
+- `directive.nim` — the value model. `DirectiveValue` with units,
+  `DirectiveParameter` schemas, `DirectiveFontTransform` as **data** rather
+  than a closure (inspectable, testable and cheap on the per-keystroke path,
+  with `custom` as the escape hatch), `DirectivePresentation` for the
+  self-contained form.
+- `directive_scanner.nim` — `matchDirective`, the boundary rule, balanced
+  delimiter scanning, and `parseArguments`, which coerces against the schema
+  without ever throwing or partially applying: a bad argument is dropped and
+  recorded as a diagnostic, so a directive always receives well-formed
+  arguments and decides for itself whether to render as invalid.
+- `directive_completion.nim` — what the caret is trying to complete. This
+  scanner's job is the opposite of the parser's: it must succeed on text the
+  parser rejects, because `@gly` is what a directive looks like while you are
+  still typing it.
+- `builtin_directives.nim` — `@font` and `@color`, meant to be read.
 
-## [`Services/`](Sources/MarkdownEngine/Services): how does the engine talk to your app?
+Directives project as `InlineNode.ext` under a reserved `directive.` id
+namespace, so every downstream consumer — tokens, caret reveal, copy, HTML —
+gets them for free. Marker dispatch is one table probe per character on the
+parse hot path, which is why a marker is a single UTF-16 code unit.
 
-`MarkdownEditorServices.swift` declares the four service protocols. Each is
-called synchronously when its construct is styled or rendered: `WikiLinkResolver`
-while styling wiki-links, `EmbeddedImageProvider` from the image-embed render
-pass, `SyntaxHighlighter` from code styling, `LatexRenderer` from the LaTeX
-render passes.
+## `mdui/` — everything AppKit used to do
 
-`WikiLinkService.swift` handles the dual-form storage / display transform —
-storage is `[[Name|<id>]]`, display is `[[Name]]`. The coordinator runs it both
-ways every time `rebuildTextStorageAndStyle()` fires.
+### `truetype.nim` — the rasteriser
 
-**Invariant:** Service callbacks are synchronous. If an embedder's
-implementation is slow, it caches (both bundled bridges do); the engine never
-async-renders.
+A pure-Nim sfnt parser and scanline rasteriser: `head`, `hhea`, `maxp`,
+`hmtx`, `cmap` (formats 0, 4, 6, 12), `loca`, `glyf`, `OS/2`, `post` and
+`kern`; simple and composite glyphs; quadratic Béziers flattened to lines.
 
-**Invariant:** Wiki-link storage and display are different strings. Display IDs
-never leak into the binding.
+Coverage is computed analytically rather than by supersampling: each line
+segment accumulates a signed area per pixel, and a prefix sum over the
+accumulator turns into coverage in one pass (the approach `font-rs` describes).
+It is exact for the polygon it is given, it needs one float per pixel, and it
+has no sample-count knob to get wrong.
 
-## [`Styling/`](Sources/MarkdownEngine/Styling): how does the AST become attributes?
+Synthetic bold (dilation) and oblique (shear) cover the faces a family group
+is missing. CFF/OTF outlines are not read; a face without `glyf` is rejected
+at load and the next family in the group is tried.
 
-`MarkdownASTStyler.styleAttributes()` is the live styler. It walks the document
-AST and emits `[StyledRange]`, **composing** attributes on descent: a heading
-sets a large bold font, descending into bold adds the bold trait (keeping the
-size), into italic adds italic — so nested / combined inline styles stack
-instead of overwriting each other. (Composition is what the old flat pass
-pipeline got wrong, e.g. the shrinking bold in `# **n*o*des**`.)
+### `fontmanager.nim`
 
-`MarkdownStyler.styleAttributes()` (`MarkdownStyler.swift:43`) is now a thin
-facade: it builds the `StylingContext`, runs the AST styler for all text
-styling, then appends the passes that still render **NSImages** and therefore
-still consume tokens — block / inline LaTeX (`+Latex`), image embeds and image
-links (`+Images`), and rendered tables (`+Tables`). `MarkdownStyler+TaskCheckboxes`
-and `+BulletMarkers` no longer style (the AST styler does); they keep only the
-caret / selection range helpers (`taskSyntaxRange`, `bulletSyntaxRange`,
-`hrLineRange`) the text-view delegate uses.
+Families are *groups* — four faces, regular/bold/italic/bold-italic — and
+resolution picks the first group whose regular face actually loads. A missing
+face within a chosen group is synthesised rather than sending the whole group
+back. Per code point there is a fallback cascade, so a glyph the chosen family
+lacks is drawn from one that has it.
 
-If the coordinator passes `scopedRanges`, only the intersecting blocks are
-re-styled — the optimization that keeps per-keystroke restyling cheap.
+It is also where `TextMetrics` comes from, the two-proc record the engine
+measures through. `defaultTextMetrics` is a cheap approximation; the engine
+cannot tell the difference, which is what lets every engine-level test run
+without touching a font file.
 
-**Invariant:** Markers shrink, they don't disappear. Inactive markers render at
-`hiddenMarkerFontSize`; they're never removed from text storage. Every
-selection / copy / find / undo bug downstream traces back to violating this.
+### `textstorage.nim` and `layout.nim`
 
-## [`Renderer/`](Sources/MarkdownEngine/Renderer): TextKit 2 layout
+`TextStorage` is the run-based attributed string: text plus attribute runs,
+with `applyStyledRanges` expanding per character *within one paragraph*,
+compressing back to runs, and splicing. Bounding the expansion to a paragraph
+is what keeps the exact `addAttribute` semantics without ever materialising
+the document character by character.
 
-Thin wrappers around `NSTextLayoutManager` (`LayoutBridge.swift`), a custom
-`MarkdownTextLayoutFragment` for precise positioning, and `EmbeddedImageCache`
-keyed by an embedder-supplied fingerprint so images and LaTeX results
-invalidate when the embedder says so.
+`layout.nim` replaces TextKit 2: paragraph-based line breaking honouring the
+paragraph style's indents and line heights, glyph positioning with kerning,
+caret rectangles, hit testing, selection rectangles, word and line motion,
+and vertical motion with a sticky desired x. Extra line height goes *above*
+the baseline, matching `minimumLineHeight`.
 
-## [`Input/`](Sources/MarkdownEngine/Input): typing-time helpers
+### `render.nim`
 
-`MarkdownInputHandler.swift` handles auto-wrap for `$…$` / `$$…$$` / `![[…]]`.
-`MarkdownListHandler.swift` handles list continuation, indent / outdent, and
-task-checkbox toggling on Enter / Tab / Backspace. Both run synchronously inside
-the text-view delegate.
+An ordered pass list, because the order is the whole design: code-block
+backgrounds (merged across consecutive lines, or the 2pt paragraph spacing
+shows as a seam), block backgrounds, glyph backgrounds, find highlights,
+artefacts (tables, images, formulas), glyphs, text decorations, task
+checkboxes, bullet markers, ordered markers, thematic breaks, blockquote bars.
 
-## [`TextView/`](Sources/MarkdownEngine/TextView): NSTextView + SwiftUI bridge
+Two things the engine deliberately leaves to this layer: a directive's symbol
+name arrives as data (`"symbol:arrow.down.to.line"`) rather than as a
+rasterised image, and a table arrives as a handle plus its geometry rather
+than as a bitmap. The Swift rasterised tables into an `NSImage`; drawing them
+with the same text engine as everything else gives crisp text at any scale.
 
-The entry point is `NativeTextViewWrapper.swift` — an `NSViewRepresentable` that
-owns the coordinator and the configured text view.
+### `editor.nim`
 
-The scroll view's `documentView` is **always** `NativeTextViewContainer`, never
-the text view itself. The container stacks up to three kinds of siblings in a
-flipped coordinate space: the optional scroll-away header band at the top (a
-clipped `NSHostingView` managed by `ScrollingHeaderController`, reserved height
-mirrored into `container.headerHeight`), the `NativeTextView` at
-`y = headerHeight` (centered at a fixed width when
-`configuration.readingWidth` is set), and — in reading-column mode — the
-full-width wide-table breakout overlays. Anything that converts between
-text-view-local rects and scroll/document space must lift by the text view's
-origin inside the container (`convert(_:to:)` or `frame.origin`); see
-`viewRect(forCharacterRange:)` and the find-in-document paths for the pattern.
+Selection, editing, undo and redo with typing coalescence, the clipboard
+paths, find and replace, scrolling with bottom overscroll, drag selection with
+autoscroll, checkbox hit testing, and the directive completion commit. It owns
+the display/storage wiki-link transform: the editor edits the display form and
+`storageFormText` is what should be persisted.
 
-Two sub-folders matter:
+Formatting toggles go through the *token list* rather than through a literal
+probe of the characters around the selection. The markers are almost never
+part of what the user highlighted, and a hand-dragged selection lands half on
+them as often as not. Asking the parser where the span begins is both simpler
+and more forgiving — and it is what makes bold-off inside `***both***` produce
+`*both*` instead of refusing.
 
-- `NativeTextView/` — extensions on the AppKit subclass (paste, drag-select
-  boost, spell policy, caret workarounds, frame/overscroll management)
-- `Coordinator/` — `NSTextViewDelegate` glue, split by concern (restyling,
-  writing-tools, find, code-blocks, inline selection, autocorrect)
+## Testing
 
-Application of `[StyledRange]` to text storage happens in
-`Coordinator/NativeTextViewCoordinator+Restyling.swift` →
-`rebuildTextStorageAndStyle()`, which tokenizes via `parseTokensViaAST` and
-calls `MarkdownStyler.styleAttributes()`.
+`tests/` mirrors `Tests/MarkdownEngineTests/` from the Swift, case by case.
+Each file names the suite it came from; where this port diverges, the test
+says so and why.
 
-## [`Configuration/`](Sources/MarkdownEngine/Configuration): the tunables
+The engine-level suites need no fonts and no window: they measure through
+`defaultTextMetrics`. The UI-level ones (`test_tables.nim`'s cell formatting,
+`test_editor.nim`) construct a real `FontManager`, which reads the installed
+fonts but still opens nothing.
 
-`MarkdownEditorConfiguration` is a struct of structs — one nested group per
-concern (headings, codeBlock, blockLatex, overscroll, markers, lists, …) —
-passed by reference into the styler via the `StylingContext`.
-`MarkdownEditorTheme` is its colour sub-field.
+Two suites carry most of the weight:
+
+- **`test_incremental.nim`** — differential fuzz over the incremental parse,
+  plus the backtick census composition property. Deterministic PRNG, so a
+  failing seed reproduces exactly.
+- **`test_styler.nim`** — the scoped restyle against the full pass, attribute
+  by attribute at every index, and `flattenedRuns` against the naive loop it
+  replaced under randomised overlap storms.
+
+## Deliberate divergences
+
+Each is commented where it happens and pinned by a test.
+
+| Divergence | Why |
+|---|---|
+| Autolinks and resolving wiki links state their colour and underline | AppKit painted a `.link` run from the attribute alone; nothing below this layer does |
+| A scheme-less host gets `https`, not `http` | `NSDataDetector`'s choice predates ubiquitous TLS |
+| The incomplete-link pass skips ranges the AST called complete links | `[[Name]]` matches the Swift's pattern; it was harmless there only because AppKit repainted afterwards |
+| A directive's symbol name reaches the renderer as data | There are no SF Symbols; the renderer decides what it can draw |
+| Tables are drawn, not rasterised | Crisp text at any scale, and no bitmap cache to invalidate |
+| `TableAlignment` members are `tca…` | Two exported enums sharing a member name are ambiguous unqualified in Nim |
+| `ParagraphStyle` has structural `==` | It is a `ref` only because the Swift mutated one and passed it around; two identical styles are the same style |
+
+## Build
+
+```bash
+nim c -r -d:release src/mdedit.nim           # the editor
+nim c -r --hints:off tests/test_all.nim      # the suite
+SDL_VIDEODRIVER=dummy ./mdedit --render-once # one frame, headless
+```
+
+`nim.cfg` sets `--mm:orc`, `--threads:off`, and the two source paths. There
+are no Nim package dependencies, so `nimble` is optional; the `.nimble` file's
+`test` and `demo` tasks run exactly the commands above.
